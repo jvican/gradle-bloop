@@ -10,7 +10,8 @@ ThisBuild / resolvers ++= List(
 def GitHubDev(handle: String, fullName: String, email: String) =
   Developer(handle, fullName, email, url(s"https://github.com/$handle"))
 
-ThisBuild / organization := "ch.epfl.scala"
+// ThisBuild / organization := "ch.epfl.scala"
+ThisBuild / organization := "me.vican.jorge"
 ThisBuild / homepage := Some(url("https://github.com/scalacenter/gradle-bloop"))
 ThisBuild / developers := List(
   GitHubDev("jvican", "Jorge Vicente Cantero", "jorge@vican.me"),
