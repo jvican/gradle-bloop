@@ -33,7 +33,9 @@ import org.gradle.api.Project
 import org.gradle.api.Task
 import org.gradle.api.artifacts.ArtifactView.ViewConfiguration
 import org.gradle.api.artifacts.Configuration
+import org.gradle.api.artifacts.component.ComponentIdentifier
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
+import org.gradle.api.artifacts.component.ProjectComponentIdentifier
 import org.gradle.api.artifacts.result.ComponentArtifactsResult
 import org.gradle.api.artifacts.result.ResolvedArtifactResult
 import org.gradle.api.attributes.Attribute
@@ -51,6 +53,7 @@ import org.gradle.api.internal.tasks.compile.JavaCompilerArgumentsBuilder
 import org.gradle.api.plugins.JavaApplication
 import org.gradle.api.provider.Property
 import org.gradle.api.provider.Provider
+import org.gradle.api.specs.Spec
 import org.gradle.api.tasks.SourceSet
 import org.gradle.api.tasks.bundling.AbstractArchiveTask
 import org.gradle.api.tasks.compile.CompileOptions
@@ -424,18 +427,30 @@ class BloopConverter(parameters: BloopParameters) {
     // get only jar artifacts
     val artifactType = Attribute.of("artifactType", classOf[String])
     val attributeType = "jar"
+
     configuration.getIncoming
       .artifactView(new Action[ViewConfiguration] {
         override def execute(viewConfig: ViewConfiguration): Unit = {
-          viewConfig.setLenient(true)
-          viewConfig.attributes(new Action[AttributeContainer] {
-            override def execute(
-                attributeContainer: AttributeContainer
-            ): Unit = {
-              attributeContainer.attribute(artifactType, attributeType)
-              ()
-            }
-          })
+          viewConfig
+            .lenient(true)
+            .componentFilter(new Spec[ComponentIdentifier] {
+              def isSatisfiedBy(id: ComponentIdentifier): Boolean = {
+                // Filter out project dependencies as we're not interested in them
+                // Furthermore, if there are any configuration transforms Gradle
+                // must check that the artifact jars are present, and if we depend
+                // on project dependencies then it'll fail because project
+                // dependencies don't have existing jars at the time of resolution
+                !(id.isInstanceOf[ProjectComponentIdentifier])
+              }
+            })
+            .attributes(new Action[AttributeContainer] {
+              override def execute(
+                  attributeContainer: AttributeContainer
+              ): Unit = {
+                attributeContainer.attribute(artifactType, attributeType)
+                ()
+              }
+            })
           ()
         }
       })
