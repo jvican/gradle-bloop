@@ -300,7 +300,16 @@ class BloopConverter(parameters: BloopParameters) {
       // this needs to be done before the getArchiveSourceSetMap - then all is resolved correctly
       // otherwise running in parallel with multiproject can cause race conditions.
       val compileClassPathFiles = sourceSet.getCompileClasspath.asScala.toList
-      val runtimeClassPathFiles = sourceSet.getRuntimeClasspath.asScala
+      val runtimeClassPathFiles0 =
+        // This is wrong, it makes many projects unable to be run with the IDE but it's a workaround
+        if (project.getPlugins().hasPlugin("com.netflix.nebula.jakartaee-migration")) {
+          sourceSet.getCompileClasspath.asScala
+        } else {
+          // Adding in compile classpath temporarily
+          sourceSet.getCompileClasspath.asScala
+        }
+
+      val runtimeClassPathFiles = runtimeClassPathFiles0
         .filterNot(sourceSetSourceOutputDirs.contains)
         .filter(_ != sourceSetResourcesOutputDir)
         .toList
