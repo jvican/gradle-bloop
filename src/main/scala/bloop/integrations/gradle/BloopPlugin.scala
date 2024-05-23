@@ -1,14 +1,10 @@
 package bloop.integrations.gradle
 
 import scala.collection.JavaConverters._
-
 import bloop.integrations.gradle.syntax._
 import bloop.integrations.gradle.tasks.BloopInstallTask
-import bloop.integrations.gradle.tasks.ConfigureBloopInstallTask
 import bloop.integrations.gradle.tasks.PluginUtils
-
-import org.gradle.api.Plugin
-import org.gradle.api.Project
+import org.gradle.api.{Action, Plugin, Project}
 import org.gradle.api.artifacts.Configuration
 import org.gradle.api.tasks.SourceSet
 
@@ -74,12 +70,15 @@ final class BloopPlugin extends Plugin[Project] {
       }
     )
 
-    // Creates two tasks: one to configure the plugin and the other one to generate the config files
-    val configureBloopInstall =
-      project.createTask[ConfigureBloopInstallTask]("configureBloopInstall")
     val bloopInstall = project.createTask[BloopInstallTask]("bloopInstall")
-    configureBloopInstall.installTask = Some(bloopInstall)
-    bloopInstall.dependsOn(configureBloopInstall)
+    project.afterEvaluate((_: Project) => {
+      if (PluginUtils.hasJavaScalaPlugin(project)) {
+        project.allSourceSets.foreach({ sourceSet: SourceSet =>
+          bloopInstall.getInputs.files(project.getConfiguration(sourceSet.getCompileClasspathConfigurationName))
+          bloopInstall.getInputs.files(project.getConfiguration(sourceSet.getRuntimeClasspathConfigurationName))
+        })
+      }
+    })
     ()
   }
 
