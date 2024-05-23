@@ -71,14 +71,21 @@ final class BloopPlugin extends Plugin[Project] {
     )
 
     val bloopInstall = project.createTask[BloopInstallTask]("bloopInstall")
-    project.afterEvaluate((_: Project) => {
-      if (PluginUtils.hasJavaScalaPlugin(project)) {
-        project.allSourceSets.foreach({ sourceSet: SourceSet =>
-          bloopInstall.getInputs.files(project.getConfiguration(sourceSet.getCompileClasspathConfigurationName))
-          bloopInstall.getInputs.files(project.getConfiguration(sourceSet.getRuntimeClasspathConfigurationName))
-        })
+    project.afterEvaluate(new org.gradle.api.Action[Project] {
+      def execute(project: Project): Unit = {
+        if (PluginUtils.hasJavaScalaPlugin(project)) {
+          project.allSourceSets.foreach({ sourceSet: SourceSet =>
+            bloopInstall.getInputs.files(
+              project.getConfiguration(sourceSet.getCompileClasspathConfigurationName)
+            )
+            bloopInstall.getInputs.files(
+              project.getConfiguration(sourceSet.getRuntimeClasspathConfigurationName)
+            )
+          })
+        }
       }
     })
+
     ()
   }
 
