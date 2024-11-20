@@ -43,7 +43,7 @@ class ConfigGenerationSuite_7_5 extends ConfigGenerationSuite {
 
 // maximum supported version
 class ConfigGenerationSuite_8_0 extends ConfigGenerationSuite {
-  protected def gradleVersion: String = "8.0.1"
+  protected def gradleVersion: String = "8.11"
 }
 /*
 // needed for scala android plugin testing - Disabled - see #worksWithAndroidScalaPlugin
@@ -1018,6 +1018,252 @@ abstract class ConfigGenerationSuite extends BaseConfigSuite {
     )
   }
 
+  @Test def worksWithNebula1(): Unit = {
+    assumeTrue(supportsCurrentJavaVersion)
+    val buildFile = testProjectDir.newFile("build.gradle")
+    testProjectDir.newFolder("src", "main", "scala")
+    writeBuildScript(
+      buildFile,
+      """
+        |plugins {
+        |  id 'bloop'
+        |  id("com.netflix.nebula.jakartaee-migration") version "0.22.0"
+        |}
+        |apply plugin: 'scala'
+        |apply plugin: 'bloop'
+        |
+        |bloop {
+        |  targetDir      = file("testDir")
+        |  includeSources = true
+        |  includeJavadoc = true
+        |}
+        |jakartaeeMigration {
+        |    migrate()
+        |}
+        |
+        |repositories {
+        |  mavenCentral()
+        |}
+        |
+        |dependencies {
+        |  implementation 'org.scala-lang:scala-library:2.12.8'
+        |}
+      """.stripMargin
+    )
+
+    val result = GradleRunner
+      .create()
+      .withGradleVersion(gradleVersion)
+      .withProjectDir(testProjectDir.getRoot)
+      .withPluginClasspath(getClasspath)
+      .withArguments("bloopInstall", "-Si")
+      .build()
+
+    println(result.getOutput())
+
+    val projectName = testProjectDir.getRoot.getName
+    // non-".bloop" dir
+    val bloopDir = new File(testProjectDir.getRoot, "testDir")
+    val bloop = new File(bloopDir, s"${projectName}.json")
+
+    val config = readValidBloopConfig(bloop)
+    // source and JavaDoc artifacts should exist
+    assert(config.project.resolution.nonEmpty)
+    assert(
+      config.project.resolution.exists(res =>
+        res.modules
+          .exists(conf =>
+            conf.artifacts.exists(artifact => artifact.classifier.contains("javadoc"))
+          )
+      )
+    )
+    assert(
+      config.project.resolution.exists(res =>
+        res.modules
+          .exists(conf =>
+            conf.artifacts.exists(artifact => artifact.classifier.contains("sources"))
+          )
+      )
+    )
+  }
+
+  @Test def worksWithNebula2(): Unit = {
+    assumeTrue(supportsCurrentJavaVersion)
+    val buildSettings = testProjectDir.newFile("settings.gradle")
+    val buildDirA = testProjectDir.newFolder("a")
+    testProjectDir.newFolder("a", "src", "main", "scala")
+    testProjectDir.newFolder("a", "src", "test", "scala")
+    val buildDirB = testProjectDir.newFolder("b")
+    testProjectDir.newFolder("b", "src", "main", "scala")
+    testProjectDir.newFolder("b", "src", "test", "scala")
+
+    val buildFileA = new File(buildDirA, "build.gradle")
+    val buildFileB = new File(buildDirB, "build.gradle")
+
+    writeBuildScript(
+      buildFileA,
+      s"""
+         |plugins {
+         |  id 'bloop'
+         |  id("com.netflix.nebula.jakartaee-migration") version "0.22.0"
+         |  id("com.github.johnrengelman.shadow") version "8.1.1"
+         |}
+         |
+         |apply plugin: 'scala'
+         |apply plugin: 'bloop'
+         |
+         |repositories {
+         |  mavenCentral()
+         |}
+         |jakartaeeMigration {
+         |    migrate()
+         |}
+         |
+         |dependencies {
+         |  implementation 'org.scala-lang:scala-library:2.12.8'
+         |}
+         |shadowJar {
+         |    configurations = [project.configurations.runtimeClasspath]
+         |    zip64 true
+         |}
+      """.stripMargin
+    )
+
+    writeBuildScript(
+      buildFileB,
+      s"""
+         |plugins {
+         |  id 'bloop'
+         |  id("com.netflix.nebula.jakartaee-migration") version "0.22.0"
+         |}
+         |
+         |apply plugin: 'java-library'
+         |apply plugin: 'scala'
+         |apply plugin: 'bloop'
+         |
+         |repositories {
+         |  mavenCentral()
+         |}
+         |jakartaeeMigration {
+         |    migrate()
+         |}
+         |
+         |dependencies {
+         |  implementation 'org.scala-lang:scala-library:2.12.8'
+         |  implementation 'org.typelevel:cats-core_2.12:1.2.0'
+         |  api project(path: ':a')
+         |}
+      """.stripMargin
+    )
+
+    writeBuildScript(
+      buildSettings,
+      """
+        |rootProject.name = 'scala-multi-projects'
+        |include 'a'
+        |include 'b'
+      """.stripMargin
+    )
+
+    createHelloWorldScalaSource(buildDirA, "package x { trait A }")
+    createHelloWorldScalaSource(
+      buildDirB,
+      "package y { trait B extends x.A { println(new z.C) } }"
+    )
+
+    val result = GradleRunner
+      .create()
+      .withGradleVersion(gradleVersion)
+      .withProjectDir(testProjectDir.getRoot)
+      .withPluginClasspath(getClasspath)
+      .withArguments("bloopInstall", "-Si")
+      .build()
+
+    println(result.getOutput)
+
+    val projectName = testProjectDir.getRoot.getName
+    val bloopDir = new File(testProjectDir.getRoot, ".bloop")
+    val bloopNone = new File(bloopDir, s"${projectName}.json")
+    val bloopA = new File(bloopDir, "a.json")
+    val bloopB = new File(bloopDir, "b.json")
+    val bloopATest = new File(bloopDir, "a-test.json")
+    val bloopBTest = new File(bloopDir, "b-test.json")
+
+    assert(!bloopNone.exists())
+    val configA = readValidBloopConfig(bloopA)
+    val configB = readValidBloopConfig(bloopB)
+    val configATest = readValidBloopConfig(bloopATest)
+    val configBTest = readValidBloopConfig(bloopBTest)
+
+    assert(configA.project.workspaceDir.nonEmpty)
+    // canonicalFile needed to pass tests on mac due to "/private/var" "/var" symlink
+    assertEquals(
+      testProjectDir.getRoot.getCanonicalFile,
+      configA.project.workspaceDir.get.toFile.getCanonicalFile
+    )
+
+    assert(configA.project.`scala`.exists(_.version == "2.12.8"))
+    assert(configB.project.`scala`.exists(_.version == "2.12.8"))
+    assert(configA.project.dependencies.isEmpty)
+    assertEquals(List("a"), configB.project.dependencies.sorted)
+    assertEquals(List("a"), configATest.project.dependencies)
+    assertEquals(List("a", "b"), configBTest.project.dependencies.sorted)
+
+    assert(hasTag(configA, Tag.Library))
+    assert(hasTag(configATest, Tag.Test))
+    assert(hasTag(configB, Tag.Library))
+    assert(hasTag(configBTest, Tag.Test))
+
+    def assertSources(config: Config.File, entryName: String): Unit = {
+      assertTrue(
+        s"Resolution field for ${config.project.name} does not exist",
+        config.project.resolution.isDefined
+      )
+      config.project.resolution.foreach { resolution =>
+        val sources = resolution.modules.find(module =>
+          module.name.contains(entryName) && module.artifacts
+            .exists(_.classifier.contains("sources"))
+        )
+        assertTrue(s"Sources for $entryName do not exist", sources.isDefined)
+        assertTrue(
+          s"There are more sources than one for $entryName:\n${sources.get.artifacts
+              .mkString("\n")}",
+          sources.exists(_.artifacts.size == 2)
+        )
+      }
+    }
+
+    assert(hasBothClasspathsEntryName(configA, "scala-library"))
+    assertSources(configA, "scala-library")
+    assert(hasBothClasspathsEntryName(configB, "scala-library"))
+    assertSources(configB, "scala-library")
+    assert(hasBothClasspathsEntryName(configATest, "scala-library"))
+    assertSources(configATest, "scala-library")
+    assert(hasBothClasspathsEntryName(configBTest, "scala-library"))
+    assertSources(configBTest, "scala-library")
+    assert(hasBothClasspathsEntryName(configATest, "/a/build/classes"))
+    assert(hasBothClasspathsEntryName(configB, "cats-core"))
+    assertSources(configB, "cats-core")
+    assert(hasBothClasspathsEntryName(configB, "/a/build/classes"))
+    assert(hasBothClasspathsEntryName(configB, "/a/src/main/resources"))
+    assert(hasBothClasspathsEntryName(configBTest, "cats-core"))
+    assertSources(configBTest, "cats-core")
+    assert(hasBothClasspathsEntryName(configBTest, "/a/build/classes"))
+    assert(hasBothClasspathsEntryName(configBTest, "/b/build/classes"))
+    assert(hasBothClasspathsEntryName(configBTest, "/a/src/main/resources"))
+    assert(hasBothClasspathsEntryName(configBTest, "/b/src/main/resources"))
+
+    assertNoConfigsHaveAnyJars(
+      List(configA, configATest, configB, configBTest),
+      List("a", "a-test", "b", "b-test")
+    )
+
+    assertAllConfigsHaveAllJars(
+      List(configB, configBTest),
+      List("cats-core_2.12-1.2.0")
+    )
+  }
+
   @Test def worksWithTransientProjectDependencies(): Unit = {
     assumeTrue(supportsCurrentJavaVersion)
     val buildSettings = testProjectDir.newFile("settings.gradle")
@@ -1238,6 +1484,8 @@ abstract class ConfigGenerationSuite extends BaseConfigSuite {
     assertSources(configBTest, "scala-library")
     assert(hasBothClasspathsEntryName(configCTest, "scala-library"))
     assertSources(configCTest, "scala-library")
+    println(configATest.project.classpath)
+    println(configATest.project.platform)
     assert(hasBothClasspathsEntryName(configATest, "/a/build/classes"))
     assert(hasBothClasspathsEntryName(configCTest, "/c/build/classes"))
     assert(hasBothClasspathsEntryName(configB, "cats-core"))
@@ -3888,13 +4136,15 @@ abstract class ConfigGenerationSuite extends BaseConfigSuite {
 
       createHelloWorldScalaSource(testProjectDir.getRoot)
 
-      GradleRunner
+      val result = GradleRunner
         .create()
         .withGradleVersion(gradleVersion)
         .withProjectDir(testProjectDir.getRoot)
         .withPluginClasspath(getClasspath)
         .withArguments("bloopInstall", "-Si")
         .build()
+
+      println(result.getOutput)
 
       val projectName = testProjectDir.getRoot.getName
       val bloopDir = new File(testProjectDir.getRoot, ".bloop")

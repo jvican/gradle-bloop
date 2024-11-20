@@ -10,6 +10,8 @@ import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.api.artifacts.Configuration
 import org.gradle.api.tasks.SourceSet
+import org.gradle.api.attributes.Attribute
+import org.gradle.api.attributes.Usage
 
 /**
  * Main entry point of the gradle bloop plugin.
@@ -122,12 +124,28 @@ final class BloopPlugin extends Plugin[Project] {
       "A configuration for Bloop to be able to export artifacts in all other configurations."
     )
 
+    // {com.netflix.gradle.jakartaee=true, org.gradle.category=library, org.gradle.dependency.bundling=external, org.gradle.jvm.environment=standard-jvm, org.gradle.jvm.version=17, org.gradle.libraryelements=jar, org.gradle.usage=java-runtime}
+    // {com.netflix.gradle.jakartaee=true, org.gradle.category=library, org.gradle.dependency.bundling=external, org.gradle.jvm.environment=standard-jvm, org.gradle.jvm.version=17, org.gradle.libraryelements=classes, org.gradle.usage=java-api}
+
     // Make this configuration not visbile in dependencyInsight reports
     bloopConfig.setVisible(false)
     // Allow this configuration to be resolved
     bloopConfig.setCanBeResolved(true)
     // This configuration is not meant to be consumed by other projects
     bloopConfig.setCanBeConsumed(false)
+
+    // val libraryElements = Attribute.of("org.gradle.libraryelements", classOf[String])
+    // bloopConfig.getAttributes().attribute(libraryElements, "classes")
+    // val usage = Attribute.of("org.gradle.usage", classOf[String])
+    // bloopConfig.getAttributes().attribute(usage, Usage.JAVA_RUNTIME)
+
+    // val category = Attribute.of("org.gradle.category", classOf[String])
+    // bloopConfig.getAttributes().attribute(category, "library")
+    // val bundling = Attribute.of("org.gradle.dependency.bundling", classOf[String])
+    // bloopConfig.getAttributes().attribute(bundling, "external")
+
+    // val artifactType = Attribute.of("artifactType", classOf[String])
+    // bloopConfig.getAttributes().attribute(artifactType, "jar")
 
     bloopConfig
   }
@@ -153,6 +171,10 @@ final class BloopPlugin extends Plugin[Project] {
           !incompatibleConfigNames.contains(config.getName())
         ) {
           bloopSourceSetConfig.extendsFrom(config)
+        //   config.getAttributes().keySet().iterator().asScala.map { attr =>
+        //     val attrValue = config.getAttributes().getAttribute(attr)
+        //     bloopSourceSetConfig.getAttributes().attribute(attr, attrValue)
+        //   }
         }
       }
     }

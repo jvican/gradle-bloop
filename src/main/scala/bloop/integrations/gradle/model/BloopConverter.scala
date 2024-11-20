@@ -39,6 +39,7 @@ import org.gradle.api.artifacts.component.ProjectComponentIdentifier
 import org.gradle.api.artifacts.result.ComponentArtifactsResult
 import org.gradle.api.artifacts.result.ResolvedArtifactResult
 import org.gradle.api.attributes.Attribute
+// import org.gradle.api.attributes.LibraryElements
 import org.gradle.api.attributes.AttributeContainer
 import org.gradle.api.component.Artifact
 import org.gradle.api.file.ConfigurableFileCollection
@@ -66,6 +67,23 @@ import org.gradle.jvm.JvmLibrary
 import org.gradle.language.base.artifact.SourcesArtifact
 import org.gradle.language.java.artifact.JavadocArtifact
 import org.gradle.plugins.ide.internal.tooling.java.DefaultInstalledJdk
+import org.gradle.api.artifacts.DependencyResolveDetails
+import java.util.function.Consumer
+import org.gradle.api.artifacts.result.ResolvedDependencyResult
+import org.gradle.api.artifacts.result.DependencyResult
+import _root_.org.gradle.api.artifacts.result.ResolvedDependencyResult
+import org.gradle.api.artifacts.Dependency
+import org.gradle.api.artifacts.ProjectDependency
+import org.gradle.api.artifacts.component.ProjectComponentSelector
+import org.gradle.internal.component.local.model.DefaultProjectComponentSelector
+import org.gradle.api.internal.artifacts.result.DefaultResolvedVariantResult
+import org.gradle.api.internal.artifacts.result.DefaultResolvedDependencyResult
+import org.gradle.api.internal.tasks.DefaultSourceSet
+import com.android.build.api.dsl.DefaultConfig
+import org.gradle.api.attributes.Bundling
+import org.gradle.api.internal.project.DefaultProject
+import org.gradle.api.internal.file.DefaultProjectLayout
+import org.gradle.api.artifacts.result.ResolvedComponentResult
 
 /**
  * Define the conversion from Gradle's project model to Bloop's project model.
@@ -294,16 +312,78 @@ class BloopConverter(parameters: BloopParameters) {
       // get Gradle output dirs
       val sourceSetSourceOutputDirs =
         sourceSet.getOutput.getClassesDirs.getFiles.asScala
-      val sourceSetResourcesOutputDir = sourceSet.getOutput.getResourcesDir
+      val sourceSetResourcesOutputDir =
+        sourceSet.getOutput.getResourcesDir
+
+      val parentFile = project.getRootProject.getRootDir().getAbsoluteFile().toPath
+
+      def isParent(parent: Path, child: Path): Boolean = {
+        try {
+          val relativePath = parent.relativize(child)
+          !relativePath.startsWith("..") && !relativePath.isAbsolute
+        } catch {
+          case _: IllegalArgumentException => false
+        }
+      }
+
+      println("FOO")
+      project
+        .getConfiguration(sourceSet.getRuntimeClasspathConfigurationName())
+        .getIncoming
+        .getResolutionResult()
+        .getAllComponents()
+        .forEach(new Consumer[ResolvedComponentResult] {
+          def accept(result: ResolvedComponentResult): Unit = {
+            val id = result.getId()
+            println(s"component for $id")
+            val variants = result.getVariants()
+            val variant = variants.asScala.head
+            println(s"VARIANTS $variants")
+            val deps = result.getDependenciesForVariant(variant)
+            println(s"deps for variant $variant: $deps")
+          }
+        })
+        println("BAR")
+
+      val abc = sourceSet.getRuntimeClasspath
+        .filter(new Spec[File] {
+          def isSatisfiedBy(f: File): Boolean = {
+            val res = isParent(parentFile, f.getAbsoluteFile().toPath())
+            println(s"file $f ${res}")
+            res
+          }
+        })
+
+      //   println(s"ABC $abc")
+
+      //   val fileCol =
+      //     if (isTestSourceSet) {
+      //         val mainSourceSet = project.allSourceSets
+      //         .find(_.getName() == SourceSet.MAIN_SOURCE_SET_NAME)
+      //         .getOrElse(sys.error("Missing main config"))
+
+      //         project.getLayout.files(sourceSet.getOutput, mainSourceSet.getOutput)
+      //     } else {
+      //         project.getLayout.files(sourceSet.getOutput)
+      //     }
 
       // get this project's classpath files
       // this needs to be done before the getArchiveSourceSetMap - then all is resolved correctly
       // otherwise running in parallel with multiproject can cause race conditions.
       val compileClassPathFiles = sourceSet.getCompileClasspath.asScala.toList
-      val runtimeClassPathFiles = sourceSet.getRuntimeClasspath.asScala
+      val runtimeClassPathFiles = abc.asScala
         .filterNot(sourceSetSourceOutputDirs.contains)
         .filter(_ != sourceSetResourcesOutputDir)
         .toList
+
+      //   println("source set files")
+      //   println(sourceSet.getOutput().getFiles())
+        val runtimeClassPathFiles2 = getRuntimeClasspathFromConfiguration(
+          project.getConfiguration(sourceSet.getRuntimeClasspathConfigurationName())
+        )
+
+        println(s"runtimeClassPathFiles for ${project}: ${runtimeClassPathFiles2}")
+      //   println(s"original runtimeClassPathFiles for ${project}: ${sourceSet.getRuntimeClasspath.getFiles()}")
 
       // create map of every projects' sourcesets -> their Gradle projects
       val allSourceSetsToProjects = getSourceSetProjectMap(
@@ -360,7 +440,8 @@ class BloopConverter(parameters: BloopParameters) {
       val bloopConfig = project.getConfiguration(bloopConfigName)
       assert(bloopConfig != null, s"Missing $bloopConfigName configuration in project!")
 
-      val modules = getConfigurationArtifacts(bloopConfig)
+      val bloopConfigArtifacts = getConfigurationArtifacts(bloopConfig)
+      val modules = bloopConfigArtifacts
         .filter(f =>
           !allArchivesToSourceSets.contains(f.getFile) &&
             !allOutputDirsToSourceSets.contains(f.getFile)
@@ -381,19 +462,11 @@ class BloopConverter(parameters: BloopParameters) {
       val testTask = getTestTask(project, sourceSetSourceOutputDirs)
       val tags = if (testTask.nonEmpty) List(Tag.Test) else List(Tag.Library)
 
-      // retrieve all artifacts to find what Scala library is being used
-      val compileClassPathConfiguration =
-        project.getConfiguration(sourceSet.getCompileClasspathConfigurationName)
-      val compileArtifacts: List[ResolvedArtifactResult] =
-        getConfigurationArtifacts(
-          compileClassPathConfiguration
-        )
-
       for {
         scalaConfig <- getScalaConfig(
           project,
           Some(sourceSet),
-          compileArtifacts
+          bloopConfigArtifacts
         )
 
         bloopProject = Config.Project(
@@ -419,6 +492,128 @@ class BloopConverter(parameters: BloopParameters) {
         )
       } yield Config.File(Config.File.LatestVersion, bloopProject)
     }
+  }
+
+  private def getProjectArtifacts(
+      configuration: Configuration
+  ): List[ResolvedArtifactResult] = {
+
+    val libraryElements = Attribute.of("org.gradle.libraryelements", classOf[String])
+    val dependencyBundling = Attribute.of("org.gradle.dependency.bundling", classOf[String])
+    val artifactType = Attribute.of("artifactType", classOf[String])
+
+    configuration.getIncoming
+      .artifactView(new Action[ViewConfiguration] {
+        override def execute(viewConfig: ViewConfiguration): Unit = {
+          viewConfig
+            .lenient(true)
+          // .attributes(new Action[AttributeContainer] {
+          //   override def execute(
+          //       attributeContainer: AttributeContainer
+          //   ): Unit = {
+          //     import org.gradle.api.attributes.LibraryElements
+          //     println(s"Attributes for project configuration: ${attributeContainer.keySet()}")
+          //     println(attributeContainer)
+          //     attributeContainer.attribute(libraryElements, LibraryElements.CLASSES)
+          //     println(attributeContainer)
+          //     // println(s"Attribute container: $attributeContainer")
+          //     // attributeContainer.attribute(dependencyBundling, Bundling.EXTERNAL)
+          //     // attributeContainer.attribute(artifactType, "jar")
+          //     ()
+          //   }
+          // })
+          ()
+        }
+      })
+      .getArtifacts
+      .asScala
+      .toList
+  }
+
+  private def getRuntimeClasspathFromConfiguration(
+      configuration: Configuration
+  ): List[File] = {
+
+    val libraryElements = Attribute.of("org.gradle.libraryelements", classOf[String])
+    val artifactType = Attribute.of("artifactType", classOf[String])
+
+    // 1. Resolve classes for project dependencies
+    // 1. Resolve resources for project dependencies
+    // 1. Resolve jars for non-project dependencies
+    // Concat classes ++ resources ++ jars
+    // Concat classesDir + resources for existing project
+
+    val projectClassDirs = configuration.getIncoming
+      .artifactView(new Action[ViewConfiguration] {
+        override def execute(viewConfig: ViewConfiguration): Unit = {
+          viewConfig
+            .lenient(true)
+            .componentFilter(new Spec[ComponentIdentifier] {
+              def isSatisfiedBy(id: ComponentIdentifier): Boolean = {
+                id.isInstanceOf[ProjectComponentIdentifier]
+              }
+            })
+            .attributes(new Action[AttributeContainer] {
+              override def execute(
+                  attributeContainer: AttributeContainer
+              ): Unit = attributeContainer.attribute(libraryElements, "classes")
+            })
+          ()
+        }
+      })
+      .getArtifacts
+      .asScala
+      .toList
+
+    println("attributess")
+    println(configuration.getIncoming.getAttributes)
+
+    val resourceClassDirs = configuration.getIncoming
+      .artifactView(new Action[ViewConfiguration] {
+        override def execute(viewConfig: ViewConfiguration): Unit = {
+          viewConfig
+            .lenient(true)
+            .componentFilter(new Spec[ComponentIdentifier] {
+              def isSatisfiedBy(id: ComponentIdentifier): Boolean = {
+                id.isInstanceOf[ProjectComponentIdentifier]
+              }
+            })
+            .attributes(new Action[AttributeContainer] {
+              override def execute(
+                  attributeContainer: AttributeContainer
+              ): Unit = attributeContainer.attribute(libraryElements, "resources")
+            })
+          ()
+        }
+      })
+      .getArtifacts
+      .asScala
+      .toList
+
+    val artifacts = configuration.getIncoming
+      .artifactView(new Action[ViewConfiguration] {
+        override def execute(viewConfig: ViewConfiguration): Unit = {
+          viewConfig
+            .lenient(true)
+            .componentFilter(new Spec[ComponentIdentifier] {
+              def isSatisfiedBy(id: ComponentIdentifier): Boolean = {
+                // Filter out projects
+                !id.isInstanceOf[ProjectComponentIdentifier]
+              }
+            })
+            .attributes(new Action[AttributeContainer] {
+              override def execute(
+                  attributeContainer: AttributeContainer
+              ): Unit = attributeContainer.attribute(artifactType, "jar")
+            })
+          ()
+        }
+      })
+      .getArtifacts
+      .asScala
+      .toList
+
+    (projectClassDirs ++ resourceClassDirs ++ artifacts).map(_.getFile())
   }
 
   private def getConfigurationArtifacts(
@@ -1132,8 +1327,8 @@ class BloopConverter(parameters: BloopParameters) {
       case _: NoSuchMethodException => None
     }
 
-  private def getJavaMainClass(app: JavaApplication): Option[String] =
-    try Option(app.getMainClassName())
+  private def getJavaMainClass(app: JavaApplication): Option[String] = {
+    try Option(app.getApplicationName())
     catch {
       case _: NoSuchMethodError =>
         // Gradle 8.0.1 removed `mainClassName` in favor of `mainClass`
@@ -1142,6 +1337,7 @@ class BloopConverter(parameters: BloopParameters) {
           classOf[JavaApplication].getDeclaredMethod("getMainClass")
         Option(mainClassNameHandle.invoke(app).asInstanceOf[Property[String]].getOrNull())
     }
+  }
 
   private def getPluginsAsOptions(scalaCompile: ScalaCompile): List[String] = {
     // Gradle 6.4 has scalaCompilerPlugins option
